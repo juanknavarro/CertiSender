@@ -15,7 +15,9 @@ import {
   Clock,
   ShieldCheck,
   Search,
+  FileDown,
 } from "lucide-react";
+import { exportReportsToPDF } from "@/utils/reportPdfExporter";
 
 export interface SentCertificateRecord {
   id: string;
@@ -140,6 +142,24 @@ export default function ReportesPage() {
     fetchReports("", "");
   };
 
+  // Exportar registros visibles a PDF vectorial
+  const handleExportPDF = () => {
+    if (records.length === 0) {
+      alert("No hay registros disponibles para exportar en este momento.");
+      return;
+    }
+    try {
+      exportReportsToPDF(records, startDate, endDate);
+    } catch (err: unknown) {
+      console.error("Error al exportar a PDF:", err);
+      setErrorMessage(
+        err instanceof Error
+          ? err.message
+          : "Ocurrió un error inesperado al generar el PDF de reportes."
+      );
+    }
+  };
+
   return (
     <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 font-sans">
       {/* Header Principal */}
@@ -158,13 +178,30 @@ export default function ReportesPage() {
           </p>
         </div>
 
-        <Link
-          href="/"
-          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs transition-colors shadow-2xs w-fit cursor-pointer"
-        >
-          <Send className="h-3.5 w-3.5" />
-          <span>Nueva Emisión</span>
-        </Link>
+        <div className="flex items-center gap-2.5">
+          <button
+            type="button"
+            onClick={handleExportPDF}
+            disabled={isLoading || records.length === 0}
+            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 hover:text-slate-900 text-slate-700 font-semibold text-xs transition-colors shadow-2xs w-fit cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            title={
+              records.length === 0
+                ? "No hay registros para exportar"
+                : "Exportar reporte oficial en PDF vectorial"
+            }
+          >
+            <FileDown className="h-3.5 w-3.5 text-indigo-600" />
+            <span>Exportar a PDF</span>
+          </button>
+
+          <Link
+            href="/"
+            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs transition-colors shadow-2xs w-fit cursor-pointer"
+          >
+            <Send className="h-3.5 w-3.5" />
+            <span>Nueva Emisión</span>
+          </Link>
+        </div>
       </div>
 
       {/* Alerta de advertencia o configuración de Supabase */}
@@ -329,9 +366,21 @@ export default function ReportesPage() {
             </h3>
           </div>
 
-          <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200/60">
-            {records.length} registro(s) encontrados
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200/60">
+              {records.length} registro(s) encontrados
+            </span>
+            <button
+              type="button"
+              onClick={handleExportPDF}
+              disabled={isLoading || records.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/70 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Exportar registros filtrados a PDF"
+            >
+              <FileDown className="h-3.5 w-3.5 text-indigo-600" />
+              <span>Exportar PDF</span>
+            </button>
+          </div>
         </div>
 
         {/* Contenedor de la Tabla */}

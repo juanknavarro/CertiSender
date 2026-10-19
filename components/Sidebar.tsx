@@ -10,7 +10,10 @@ import {
   X,
   ShieldCheck,
   Award,
+  Settings,
+  Info,
 } from "lucide-react";
+import packageInfo from "@/package.json";
 
 const NAV_ITEMS = [
   {
@@ -24,6 +27,18 @@ const NAV_ITEMS = [
     href: "/reportes",
     icon: BarChart3,
     badge: "Bitácora",
+  },
+  {
+    name: "Configuraciones",
+    href: "/configuraciones",
+    icon: Settings,
+    badge: "Ajustes",
+  },
+  {
+    name: "Acerca de",
+    href: "/acerca-de",
+    icon: Info,
+    badge: "Info",
   },
 ];
 
@@ -39,9 +54,14 @@ export default function Sidebar() {
           <div className="h-9 w-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-xs">
             <Award className="h-5 w-5 stroke-[2.2]" />
           </div>
-          <span className="font-bold text-lg text-slate-900 tracking-tight">
-            CertiSender
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="font-bold text-lg text-slate-900 tracking-tight">
+              CertiSender
+            </span>
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-sm bg-indigo-50 text-indigo-700 border border-indigo-200/50">
+              v{packageInfo.version}
+            </span>
+          </div>
         </Link>
         <button
           onClick={() => setMobileOpen(!mobileOpen)}
@@ -100,7 +120,7 @@ export default function Sidebar() {
                   CertiSender
                 </span>
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-sm bg-indigo-50 text-indigo-700 border border-indigo-200/50">
-                  v2.0
+                  v{packageInfo.version}
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 font-medium leading-none mt-0.5">
@@ -163,7 +183,7 @@ export default function Sidebar() {
           </div>
 
           <div className="flex items-center justify-between text-[11px] text-slate-400 px-1">
-            <span>CertiSender Platform</span>
+            <span>CertiSender v{packageInfo.version}</span>
             <span className="h-2 w-2 rounded-full bg-emerald-500" title="En línea" />
           </div>
         </div>

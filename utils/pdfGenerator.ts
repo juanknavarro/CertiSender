@@ -1,4 +1,5 @@
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import { CertificateSettings } from "@/context/SettingsContext";
 
 export interface Attendee {
   fullName: string;
@@ -8,15 +9,43 @@ export interface Attendee {
 }
 
 /**
- * Construye y formatea el PDF del certificado para un participante a partir de un ArrayBuffer de la plantilla base.
+ * Convierte un código HEX (#RRGGBB o #RGB) a formato RGB de pdf-lib (escala decimal 0 a 1).
+ *
+ * @param hex Código hexadecimal de color
+ * @returns Instancia rgb de pdf-lib lista para drawText
+ */
+export function hexToPdfRgb(hex: string) {
+  let cleanHex = (hex || "").replace("#", "").trim();
+  if (cleanHex.length === 3) {
+    cleanHex = cleanHex
+      .split("")
+      .map((c) => c + c)
+      .join("");
+  }
+  const r = parseInt(cleanHex.substring(0, 2), 16) / 255;
+  const g = parseInt(cleanHex.substring(2, 4), 16) / 255;
+  const b = parseInt(cleanHex.substring(4, 6), 16) / 255;
+
+  return rgb(
+    isNaN(r) ? 0.1 : Math.max(0, Math.min(1, r)),
+    isNaN(g) ? 0.15 : Math.max(0, Math.min(1, g)),
+    isNaN(b) ? 0.3 : Math.max(0, Math.min(1, b))
+  );
+}
+
+/**
+ * Construye y formatea el PDF del certificado para un participante a partir de un ArrayBuffer
+ * y parámetros de diseño tipográficos dinámicos.
  *
  * @param attendee Datos del participante
  * @param templateBuffer Buffer binario del archivo PDF de la plantilla subida dinámicamente
+ * @param settings Configuraciones dinámicas de tamaños de fuente y colores
  * @returns Instancia modificada de PDFDocument
  */
 export async function buildCertificateDocument(
   attendee: Attendee,
-  templateBuffer?: ArrayBuffer | null
+  templateBuffer?: ArrayBuffer | null,
+  settings?: CertificateSettings
 ): Promise<PDFDocument> {
   let existingPdfBytes: ArrayBuffer;
 
@@ -50,13 +79,19 @@ export async function buildCertificateDocument(
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-  // 4. Cálculo Proporcional del Eje Y
+  // 4. Parámetros Tipográficos Dinámicos (o valores por defecto)
+  const nameFontSize = settings?.nameFontSize ?? 28;
+  const nameColor = hexToPdfRgb(settings?.nameColorHex ?? "#1a264d");
+
+  const docFontSize = settings?.docFontSize ?? 14;
+  const docColor = hexToPdfRgb(settings?.docColorHex ?? "#4d4d4d");
+
+  // 5. Cálculo Proporcional del Eje Y
   const yNombre = height * 0.665; // A ras de la línea dorada inferior
   const yDoc = height * 0.62;     // Justo por debajo de la línea dorada
 
-  // 5. Normalización a Mayúsculas y Centrado Horizontal Dinámico del Nombre Completo
+  // 6. Normalización a Mayúsculas y Centrado Horizontal Dinámico del Nombre Completo
   const formattedName = (attendee.fullName || "").trim().toUpperCase();
-  const nameFontSize = 28;
   const nameTextWidth = fontBold.widthOfTextAtSize(formattedName, nameFontSize);
   const xName = (width - nameTextWidth) / 2;
 
@@ -65,14 +100,13 @@ export async function buildCertificateDocument(
     y: yNombre,
     size: nameFontSize,
     font: fontBold,
-    color: rgb(0.1, 0.15, 0.3),
+    color: nameColor,
   });
 
-  // 6. Concatenación y Centrado Horizontal Dinámico del Tipo y Número de Documento
+  // 7. Concatenación y Centrado Horizontal Dinámico del Tipo y Número de Documento
   const docType = (attendee.docType || "CC").trim();
   const docNumber = (attendee.docNumber || "N/A").trim();
   const docText = `${docType}. ${docNumber}`;
-  const docFontSize = 14;
   const docTextWidth = fontRegular.widthOfTextAtSize(docText, docFontSize);
   const xDoc = (width - docTextWidth) / 2;
 
@@ -81,7 +115,7 @@ export async function buildCertificateDocument(
     y: yDoc,
     size: docFontSize,
     font: fontRegular,
-    color: rgb(0.3, 0.3, 0.3),
+    color: docColor,
   });
 
   return pdfDoc;
@@ -92,9 +126,14 @@ export async function buildCertificateDocument(
  */
 export async function generateCertificate(
   attendee: Attendee,
-  templateBuffer?: ArrayBuffer | null
+  templateBuffer?: ArrayBuffer | null,
+  settings?: CertificateSettings
 ): Promise<Blob> {
-  const pdfDoc = await buildCertificateDocument(attendee, templateBuffer);
+  const pdfDoc = await buildCertificateDocument(
+    attendee,
+    templateBuffer,
+    settings
+  );
   const pdfBytes = await pdfDoc.save();
   return new Blob([pdfBytes as unknown as BlobPart], {
     type: "application/pdf",
@@ -106,8 +145,13 @@ export async function generateCertificate(
  */
 export async function generateCertificateBase64(
   attendee: Attendee,
-  templateBuffer?: ArrayBuffer | null
+  templateBuffer?: ArrayBuffer | null,
+  settings?: CertificateSettings
 ): Promise<string> {
-  const pdfDoc = await buildCertificateDocument(attendee, templateBuffer);
+  const pdfDoc = await buildCertificateDocument(
+    attendee,
+    templateBuffer,
+    settings
+  );
   return await pdfDoc.saveAsBase64({ dataUri: false });
 }

@@ -24,6 +24,7 @@ import {
   generateCertificateBase64,
   Attendee,
 } from "@/utils/pdfGenerator";
+import { useSettings } from "@/context/SettingsContext";
 
 // Flexible string normalization to match varying column header casing, accents and symbols
 function normalizeHeader(str: string): string {
@@ -36,6 +37,9 @@ function normalizeHeader(str: string): string {
 }
 
 export default function CertiSenderDashboard() {
+  // Global Typography and Color Settings
+  const { settings } = useSettings();
+
   // States for Dynamic PDF Template
   const [templateFile, setTemplateFile] = useState<File | null>(null);
   const [templateBuffer, setTemplateBuffer] = useState<ArrayBuffer | null>(null);
@@ -343,7 +347,11 @@ export default function CertiSenderDashboard() {
 
     try {
       setGeneratingIndex(index);
-      const pdfBlob = await generateCertificate(attendee, templateBuffer);
+      const pdfBlob = await generateCertificate(
+        attendee,
+        templateBuffer,
+        settings
+      );
       const pdfUrl = URL.createObjectURL(pdfBlob);
       window.open(pdfUrl, "_blank");
     } catch (err: unknown) {
@@ -429,10 +437,11 @@ export default function CertiSenderDashboard() {
       );
 
       try {
-        // 1. Generar el PDF en Base64 usando el templateBuffer dinámico
+        // 1. Generar el PDF en Base64 usando el templateBuffer dinámico y las configuraciones de diseño
         const pdfBase64 = await generateCertificateBase64(
           attendee,
-          templateBuffer
+          templateBuffer,
+          settings
         );
 
         // 2. Personalizar el cuerpo del mensaje
