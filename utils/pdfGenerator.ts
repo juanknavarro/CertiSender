@@ -8,28 +8,35 @@ export interface Attendee {
 }
 
 /**
- * Construye y formatea el PDF del certificado para un participante.
+ * Construye y formatea el PDF del certificado para un participante a partir de un ArrayBuffer de la plantilla base.
  *
  * @param attendee Datos del participante
+ * @param templateBuffer Buffer binario del archivo PDF de la plantilla subida dinámicamente
  * @returns Instancia modificada de PDFDocument
  */
 export async function buildCertificateDocument(
-  attendee: Attendee
+  attendee: Attendee,
+  templateBuffer?: ArrayBuffer | null
 ): Promise<PDFDocument> {
-  // 1. Obtener la plantilla base desde public/plantilla_base.pdf
-  const response = await fetch("/plantilla_base.pdf");
-  if (!response.ok) {
-    throw new Error(
-      `No se pudo cargar la plantilla base (código HTTP ${response.status}). Asegúrate de colocar "plantilla_base.pdf" en la carpeta public/.`
-    );
+  let existingPdfBytes: ArrayBuffer;
+
+  if (templateBuffer) {
+    existingPdfBytes = templateBuffer;
+  } else {
+    // Fallback hacia la plantilla estática si no se pasó un buffer dinámico
+    const response = await fetch("/plantilla_base.pdf");
+    if (!response.ok) {
+      throw new Error(
+        "No se encontró la plantilla PDF base. Por favor sube tu archivo PDF desde la interfaz antes de continuar."
+      );
+    }
+    existingPdfBytes = await response.arrayBuffer();
   }
 
-  const existingPdfBytes = await response.arrayBuffer();
-
-  // 2. Cargar el documento PDF con pdf-lib
+  // 1. Cargar el documento PDF con pdf-lib
   const pdfDoc = await PDFDocument.load(existingPdfBytes);
 
-  // 3. Obtener la primera página y extraer dimensiones reales
+  // 2. Obtener la primera página y extraer dimensiones reales
   const pages = pdfDoc.getPages();
   const page = pages[0];
 
@@ -39,15 +46,15 @@ export async function buildCertificateDocument(
 
   const { width, height } = page.getSize();
 
-  // 4. Incrustar fuentes estándar para medición exacta del texto
+  // 3. Incrustar fuentes estándar para medición exacta del texto
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-  // 5. Cálculo Proporcional del Eje Y
+  // 4. Cálculo Proporcional del Eje Y
   const yNombre = height * 0.665; // A ras de la línea dorada inferior
   const yDoc = height * 0.62;     // Justo por debajo de la línea dorada
 
-  // 6. Normalización a Mayúsculas y Centrado Horizontal Dinámico del Nombre Completo
+  // 5. Normalización a Mayúsculas y Centrado Horizontal Dinámico del Nombre Completo
   const formattedName = (attendee.fullName || "").trim().toUpperCase();
   const nameFontSize = 28;
   const nameTextWidth = fontBold.widthOfTextAtSize(formattedName, nameFontSize);
@@ -61,7 +68,7 @@ export async function buildCertificateDocument(
     color: rgb(0.1, 0.15, 0.3),
   });
 
-  // 7. Concatenación y Centrado Horizontal Dinámico del Tipo y Número de Documento
+  // 6. Concatenación y Centrado Horizontal Dinámico del Tipo y Número de Documento
   const docType = (attendee.docType || "CC").trim();
   const docNumber = (attendee.docNumber || "N/A").trim();
   const docText = `${docType}. ${docNumber}`;
@@ -83,8 +90,11 @@ export async function buildCertificateDocument(
 /**
  * Genera el certificado y lo retorna como un Blob listo para visualización en el navegador.
  */
-export async function generateCertificate(attendee: Attendee): Promise<Blob> {
-  const pdfDoc = await buildCertificateDocument(attendee);
+export async function generateCertificate(
+  attendee: Attendee,
+  templateBuffer?: ArrayBuffer | null
+): Promise<Blob> {
+  const pdfDoc = await buildCertificateDocument(attendee, templateBuffer);
   const pdfBytes = await pdfDoc.save();
   return new Blob([pdfBytes as unknown as BlobPart], {
     type: "application/pdf",
@@ -95,8 +105,9 @@ export async function generateCertificate(attendee: Attendee): Promise<Blob> {
  * Genera el certificado y lo retorna como una cadena en formato Base64 para el envío por correo.
  */
 export async function generateCertificateBase64(
-  attendee: Attendee
+  attendee: Attendee,
+  templateBuffer?: ArrayBuffer | null
 ): Promise<string> {
-  const pdfDoc = await buildCertificateDocument(attendee);
+  const pdfDoc = await buildCertificateDocument(attendee, templateBuffer);
   return await pdfDoc.saveAsBase64({ dataUri: false });
 }

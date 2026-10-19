@@ -1,12 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
 import nodemailer from "nodemailer";
+import { createClient } from "@supabase/supabase-js";
+
+// Inicializar cliente Supabase con variables de entorno
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+const supabase =
+  supabaseUrl && supabaseAnonKey
+    ? createClient(supabaseUrl, supabaseAnonKey)
+    : null;
 
 export async function POST(req: NextRequest) {
   try {
-    const { to, subject, body, pdfBase64, senderEmail, senderPassword } =
-      await req.json();
+    const bodyJson = await req.json();
+    const {
+      to,
+      subject,
+      body,
+      pdfBase64,
+      senderEmail,
+      senderPassword,
+      recipient_name,
+      recipientName,
+      doc_type,
+      docType,
+      doc_number,
+      docNumber,
+    } = bodyJson;
 
-    // 1. Validación de campos obligatorios
+    // 1. Validación de campos obligatorios para despacho
     if (!to || !subject || !body || !pdfBase64) {
       return NextResponse.json(
         {
@@ -27,6 +50,12 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+
+    // Extracción normalizada de datos del participante para el log
+    const participantName =
+      (recipient_name || recipientName || "").trim();
+    const documentType = (doc_type || docType || "CC").trim();
+    const documentNumber = (doc_number || docNumber || "N/A").trim();
 
     // 3. Configuración del transporte Nodemailer dinámico con credenciales del usuario
     const transporter = nodemailer.createTransport({
@@ -58,6 +87,37 @@ export async function POST(req: NextRequest) {
       ],
     });
 
+    // 5. Registro en Base de Datos Supabase (sent_certificates) tras despacho exitoso
+    if (supabase) {
+      try {
+        const { error: dbError } = await supabase
+          .from("sent_certificates")
+          .insert([
+            {
+              recipient_name: participantName,
+              recipient_email: to,
+              doc_type: documentType,
+              doc_number: documentNumber,
+              sender_email: senderEmail.trim(),
+            },
+          ]);
+
+        if (dbError) {
+          console.error(
+            "Error al registrar certificado en Supabase (sent_certificates):",
+            dbError
+          );
+        }
+      } catch (dbErr: unknown) {
+        console.error("Excepción inesperada al insertar en Supabase:", dbErr);
+      }
+    } else {
+      console.warn(
+        "Supabase no está inicializado. Verifica NEXT_PUBLIC_SUPABASE_URL y NEXT_PUBLIC_SUPABASE_ANON_KEY en tus variables de entorno."
+      );
+    }
+
+    // Retorna HTTP 200 prioritario si el correo se despachó exitosamente
     return NextResponse.json({
       success: true,
       messageId: info.messageId,
