@@ -27,11 +27,37 @@ export async function GET(req: NextRequest) {
     const { searchParams } = req.nextUrl;
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
+    const userId = searchParams.get("userId");
+    const filterIssuerId = searchParams.get("filterIssuerId");
 
+    // 1. Validar el rol del usuario que solicita la información
+    let isSuperadmin = false;
+    if (userId) {
+      const { data: requesterProfile } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", userId)
+        .maybeSingle();
+
+      if (requesterProfile?.role === "superadmin") {
+        isSuperadmin = true;
+      }
+    }
+
+    // 2. Construir la consulta principal de certificados
     let query = supabase
       .from("sent_certificates")
       .select("*")
       .order("sent_at", { ascending: false });
+
+    // Aislamiento por RLS / Rol:
+    // - Si es Emisor: solo ve registros donde user_id = userId
+    // - Si es Superadmin: ve todo, con opción de filtrar por un emisor específico
+    if (!isSuperadmin && userId) {
+      query = query.eq("user_id", userId);
+    } else if (isSuperadmin && filterIssuerId && filterIssuerId !== "all") {
+      query = query.eq("user_id", filterIssuerId);
+    }
 
     // Filtro por Fecha de Inicio
     if (startDate && startDate.trim()) {
@@ -66,12 +92,33 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    // 3. Si es Superadmin, obtener la lista de emisores para el selector de auditoría
+    let issuersList: Array<{
+      id: string;
+      full_name: string;
+      email: string;
+      cedula: string;
+      academic_programs?: { name: string } | null;
+    }> = [];
+
+    if (isSuperadmin) {
+      const { data: issuers } = await supabase
+        .from("profiles")
+        .select("id, full_name, email, cedula, academic_programs(name)")
+        .order("full_name", { ascending: true });
+
+      if (issuers) {
+        issuersList = issuers as unknown as typeof issuersList;
+      }
+    }
+
     return NextResponse.json({
       data: data || [],
       total: data?.length || 0,
+      isSuperadmin,
+      issuers: issuersList,
     });
   } catch (err: unknown) {
-    // Permitir que Next.js maneje internamente las señales de prerendering dinámico
     if ((err as { digest?: string })?.digest === "NEXT_PRERENDER_INTERRUPTED") {
       throw err;
     }

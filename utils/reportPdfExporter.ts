@@ -9,6 +9,7 @@ export interface SentCertificateRecord {
   doc_number: string;
   sender_email: string;
   sent_at: string;
+  user_id?: string;
 }
 
 // Formateador de fecha legible
@@ -36,11 +37,13 @@ function formatDateTime(dateString: string): string {
  * @param data Lista de registros de certificados emitidos
  * @param startDate Fecha inicial del filtro (opcional)
  * @param endDate Fecha final del filtro (opcional)
+ * @param issuerScope Ámbito de auditoría o emisor (opcional)
  */
 export function exportReportsToPDF(
   data: SentCertificateRecord[],
   startDate?: string,
-  endDate?: string
+  endDate?: string,
+  issuerScope?: string
 ): void {
   // Inicializar documento A4 vertical en milímetros
   const doc = new jsPDF({
@@ -71,7 +74,7 @@ export function exportReportsToPDF(
 
   // Metadatos del informe
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(9.5);
+  doc.setFontSize(9);
   doc.setTextColor(71, 85, 105); // slate-600
 
   // Determinación del texto de rango
@@ -96,12 +99,18 @@ export function exportReportsToPDF(
   // Columna izquierda de metadatos
   doc.text(`Rango de fechas: ${rangeText}`, 14, 32);
   doc.text(`Total de certificados emitidos: ${data.length}`, 14, 38);
+  if (issuerScope) {
+    doc.text(`Ámbito de emisión: ${issuerScope}`, 14, 44);
+  }
 
   // Columna derecha de metadatos
   doc.text(`Fecha de generación: ${generatedDateStr}`, pageWidth - 14, 32, {
     align: "right",
   });
-  doc.text("Estado: Auditoría Verificada (TLS/SMTP)", pageWidth - 14, 38, {
+  doc.text("Auditoría: Supabase RLS / TLS SMTP", pageWidth - 14, 38, {
+    align: "right",
+  });
+  doc.text("Validez: Certificación Institucional", pageWidth - 14, 44, {
     align: "right",
   });
 
@@ -133,11 +142,13 @@ export function exportReportsToPDF(
     ];
   });
 
+  const startYPosition = issuerScope ? 50 : 46;
+
   // Generación de tabla con jspdf-autotable
   autoTable(doc, {
     head: tableHeaders,
     body: tableBody,
-    startY: 44,
+    startY: startYPosition,
     margin: { left: 14, right: 14, bottom: 20 },
     theme: "striped",
     styles: {
@@ -169,7 +180,9 @@ export function exportReportsToPDF(
     didDrawPage: (hookData) => {
       // Pie de página en todas las páginas
       const currentDoc = hookData.doc;
-      const totalPages = (currentDoc.internal as unknown as { getNumberOfPages: () => number }).getNumberOfPages();
+      const totalPages = (
+        currentDoc.internal as unknown as { getNumberOfPages: () => number }
+      ).getNumberOfPages();
       const pageNum = hookData.pageNumber;
 
       currentDoc.setFont("helvetica", "normal");

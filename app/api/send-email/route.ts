@@ -11,6 +11,67 @@ const supabase =
     ? createClient(supabaseUrl, supabaseAnonKey)
     : null;
 
+interface SmtpTransportConfig {
+  host: string;
+  port: number;
+  secure: boolean;
+  requireTLS?: boolean;
+  tls?: {
+    ciphers?: string;
+    minVersion?: string;
+    rejectUnauthorized?: boolean;
+  };
+}
+
+// Resuelve dinámicamente la configuración SMTP según el dominio del correo remitente
+export function resolveSmtpConfig(email: string): SmtpTransportConfig {
+  const cleanEmail = email.trim().toLowerCase();
+
+  // 1. Detección de Proveedor Google / Gmail
+  if (
+    cleanEmail.endsWith("@gmail.com") ||
+    cleanEmail.endsWith("@googlemail.com")
+  ) {
+    return {
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true, // SSL directo
+    };
+  }
+
+  // 2. Detección de Microsoft 365, Outlook, Hotmail o Correo Institucional Unisinú
+  if (
+    cleanEmail.endsWith("@unisinu.edu.co") ||
+    cleanEmail.endsWith("@outlook.com") ||
+    cleanEmail.endsWith("@hotmail.com") ||
+    cleanEmail.endsWith("@live.com") ||
+    cleanEmail.includes("microsoft") ||
+    cleanEmail.includes("office365")
+  ) {
+    return {
+      host: "smtp.office365.com",
+      port: 587,
+      secure: false, // Negocia STARTTLS en puerto 587
+      requireTLS: true,
+      tls: {
+        ciphers: "SSLv3",
+        minVersion: "TLSv1.2",
+      },
+    };
+  }
+
+  // 3. Fallback corporativo estándar (Puerto 587 con STARTTLS)
+  return {
+    host: "smtp.office365.com",
+    port: 587,
+    secure: false,
+    requireTLS: true,
+    tls: {
+      minVersion: "TLSv1.2",
+    },
+  };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const bodyJson = await req.json();
@@ -27,7 +88,11 @@ export async function POST(req: NextRequest) {
       docType,
       doc_number,
       docNumber,
+      user_id,
+      userId,
     } = bodyJson;
+
+    const currentUserId = user_id || userId || null;
 
     // 1. Validación de campos obligatorios para despacho
     if (!to || !subject || !body || !pdfBase64) {
@@ -57,16 +122,15 @@ export async function POST(req: NextRequest) {
     const documentType = (doc_type || docType || "CC").trim();
     const documentNumber = (doc_number || docNumber || "N/A").trim();
 
-    // 3. Configuración del transporte Nodemailer dinámico con credenciales del usuario
+    // 3. Configuración del transporte Nodemailer dinámico con credenciales y enrutamiento inteligente
+    const smtpConfig = resolveSmtpConfig(senderEmail);
     const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true, // puerto 465 SSL estándar
+      ...smtpConfig,
       auth: {
         user: senderEmail.trim(),
         pass: senderPassword.trim(),
       },
-    });
+    } as Parameters<typeof nodemailer.createTransport>[0]);
 
     // Formatear cuerpo del mensaje para texto plano y HTML
     const htmlBody = body.replace(/\n/g, "<br>");
@@ -99,6 +163,7 @@ export async function POST(req: NextRequest) {
               doc_type: documentType,
               doc_number: documentNumber,
               sender_email: senderEmail.trim(),
+              user_id: currentUserId,
             },
           ]);
 

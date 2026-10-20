@@ -1,4 +1,4 @@
-"use client";
+export const instant = false;
 
 import React from "react";
 import Link from "next/link";
