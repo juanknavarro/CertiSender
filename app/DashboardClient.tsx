@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useMemo } from "react";
 import { useDropzone } from "react-dropzone";
 import * as XLSX from "xlsx";
 import {
@@ -21,6 +21,10 @@ import {
   Archive,
   Globe,
   Laptop,
+  SlidersHorizontal,
+  X,
+  Sparkles,
+  Check,
 } from "lucide-react";
 import {
   generateCertificate,
@@ -31,6 +35,11 @@ import {
   exportLocalZipPackage,
   triggerBrowserDownload,
 } from "@/utils/localZipExporter";
+import {
+  ColumnMappingConfig,
+  inferInitialColumnMapping,
+  transformRowsToAttendees,
+} from "@/utils/excelNormalizer";
 import { supabase } from "@/lib/supabaseClient";
 import { useSettings } from "@/context/SettingsContext";
 import { useAuth } from "@/context/AuthContext";
@@ -73,6 +82,10 @@ export default function CertiSenderDashboard() {
   // States for File Upload and Attendees
   const [uploadedExcelFile, setUploadedExcelFile] = useState<File | null>(null);
   const [attendees, setAttendees] = useState<Attendee[]>([]);
+  const [rawExcelRows, setRawExcelRows] = useState<unknown[][]>([]);
+  const [excelHeaders, setExcelHeaders] = useState<string[]>([]);
+  const [mappingConfig, setMappingConfig] = useState<ColumnMappingConfig | null>(null);
+  const [isMappingModalOpen, setIsMappingModalOpen] = useState<boolean>(false);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [progress, setProgress] = useState<string>("");
   const [generatingIndex, setGeneratingIndex] = useState<number | null>(null);
@@ -132,7 +145,7 @@ export default function CertiSenderDashboard() {
     setNotification(null);
   };
 
-  // 2. Manejador de carga y limpieza de Excel (Google Forms)
+  // 2. Manejador de carga de archivo Excel / CSV (Ingesta Cruda)
   const onDropExcel = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return;
 
@@ -144,6 +157,9 @@ export default function CertiSenderDashboard() {
 
     reader.onerror = () => {
       setAttendees([]);
+      setRawExcelRows([]);
+      setExcelHeaders([]);
+      setMappingConfig(null);
       setNotification({
         type: "error",
         message:
@@ -163,7 +179,7 @@ export default function CertiSenderDashboard() {
 
         if (!firstSheetName) {
           throw new Error(
-            "El archivo Excel subido no contiene ninguna hoja de cálculo válida."
+            "El archivo subido no contiene ninguna hoja de cálculo válida."
           );
         }
 
@@ -176,125 +192,44 @@ export default function CertiSenderDashboard() {
 
         if (rows.length < 2) {
           throw new Error(
-            "El archivo Excel está vacío o no contiene filas de datos suficientes (se requiere cabecera y al menos un registro)."
+            "El archivo está vacío o no contiene filas de datos suficientes (se requiere cabecera y al menos un registro)."
           );
         }
 
-        const headerRow = (rows[0] as unknown[]).map((cell) =>
-          typeof cell === "string" ? cell.trim() : String(cell || "").trim()
-        );
+        // Extraer encabezados de la primera fila
+        const headerRow = (rows[0] as unknown[])
+          .map((cell) =>
+            typeof cell === "string" ? cell.trim() : String(cell || "").trim()
+          )
+          .filter((cell) => cell.length > 0);
 
-        // Column: "Nombres y apellidos"
-        const fullNameIdx = headerRow.findIndex((h) => {
-          const n = normalizeHeader(h);
-          return (
-            n === "nombresyapellidos" ||
-            n === "nombreyapellido" ||
-            n === "nombresyapellido" ||
-            (n.includes("nombre") && (n.includes("apellido") || n.includes("completo")))
-          );
-        });
-
-        // Column: "Tipo de identificación"
-        const docTypeIdx = headerRow.findIndex((h) => {
-          const n = normalizeHeader(h);
-          return (
-            n === "tipodeidentificacion" ||
-            n === "tipodeidentificacin" ||
-            n === "tipodocumento" ||
-            (n.includes("tipo") && (n.includes("identifica") || n.includes("documento")))
-          );
-        });
-
-        // Column: "N° de identificación"
-        const docNumberIdx = headerRow.findIndex((h) => {
-          const n = normalizeHeader(h);
-          return (
-            n === "ndeidentificacion" ||
-            n === "nodeidentificacion" ||
-            n === "nrodeidentificacion" ||
-            n === "numerodeidentificacion" ||
-            n === "numerodedocumento" ||
-            ((n.includes("identifica") || n.includes("documento")) && !n.includes("tipo"))
-          );
-        });
-
-        // Column: "Correo Electrónico2"
-        let emailIdx = headerRow.findIndex((h) => {
-          const n = normalizeHeader(h);
-          return (
-            n === "correoelectronico2" ||
-            ((n.includes("correo") || n.includes("email")) && n.includes("2"))
-          );
-        });
-
-        if (emailIdx === -1) {
-          emailIdx = headerRow.findIndex((h) => {
-            const n = normalizeHeader(h);
-            return (
-              n === "correoelectronico" ||
-              n === "email" ||
-              n.includes("correo") ||
-              n.includes("email")
-            );
-          });
+        if (headerRow.length === 0) {
+          throw new Error("No se detectaron encabezados válidos en la primera fila.");
         }
 
-        const missingCols: string[] = [];
-        if (fullNameIdx === -1) missingCols.push('"Nombres y apellidos"');
-        if (emailIdx === -1) missingCols.push('"Correo Electrónico2"');
+        // Inferencia heurística inicial del mapeo
+        const initialMapping = inferInitialColumnMapping(headerRow);
 
-        if (missingCols.length > 0) {
-          throw new Error(
-            `El archivo no contiene las columnas requeridas: ${missingCols.join(
-              ", "
-            )}. Asegúrate de subir el archivo original de Google Forms.`
-          );
-        }
+        setRawExcelRows(rows);
+        setExcelHeaders(headerRow);
+        setMappingConfig(initialMapping);
+        setIsMappingModalOpen(true);
 
-        const cleanedAttendees: Attendee[] = [];
-
-        for (let i = 1; i < rows.length; i++) {
-          const row = rows[i] as unknown[];
-          if (!row || row.length === 0) continue;
-
-          const fullName =
-            fullNameIdx !== -1 ? String(row[fullNameIdx] ?? "").trim() : "";
-          const docType =
-            docTypeIdx !== -1 ? String(row[docTypeIdx] ?? "").trim() : "CC";
-          const docNumber =
-            docNumberIdx !== -1 ? String(row[docNumberIdx] ?? "").trim() : "N/A";
-          const email =
-            emailIdx !== -1 ? String(row[emailIdx] ?? "").trim() : "";
-
-          if (fullName.length > 0 && email.length > 0) {
-            cleanedAttendees.push({
-              fullName,
-              docType: docType || "CC",
-              docNumber: docNumber || "N/A",
-              email,
-            });
-          }
-        }
-
-        if (cleanedAttendees.length === 0) {
-          throw new Error(
-            "No se encontraron asistentes válidos. Todas las filas evaluadas carecían de Nombre o Correo Electrónico."
-          );
-        }
-
-        setAttendees(cleanedAttendees);
         setNotification({
-          type: "success",
-          message: `¡Excel procesado con éxito! Se cargaron ${cleanedAttendees.length} asistentes listos para recibir su certificado.`,
+          type: "warning",
+          message: `Archivo cargado (${rows.length - 1} filas detectadas). Revisa y confirma el mapeo de columnas para procesar los asistentes.`,
         });
       } catch (err: unknown) {
-        console.error("Error al procesar Excel:", err);
+        console.error("Error al procesar archivo:", err);
+        setUploadedExcelFile(null);
         setAttendees([]);
+        setRawExcelRows([]);
+        setExcelHeaders([]);
+        setMappingConfig(null);
         const errorMsg =
           err instanceof Error
             ? err.message
-            : "Error inesperado al procesar el archivo Excel. Verifica el formato.";
+            : "Error inesperado al procesar el archivo. Verifica el formato.";
         setNotification({
           type: "error",
           message: errorMsg,
@@ -304,6 +239,51 @@ export default function CertiSenderDashboard() {
 
     reader.readAsArrayBuffer(file);
   }, []);
+
+  // Previsualización en tiempo real de las primeras 3 filas para el Modal de Mapeo
+  const previewAttendees = useMemo(() => {
+    if (!mappingConfig || rawExcelRows.length < 2) return [];
+    return transformRowsToAttendees(rawExcelRows, excelHeaders, mappingConfig, 3);
+  }, [rawExcelRows, excelHeaders, mappingConfig]);
+
+  // Aplicar el mapeo seleccionado y generar los attendees normalizados
+  const handleApplyMapping = () => {
+    if (!mappingConfig || rawExcelRows.length < 2) return;
+
+    if (mappingConfig.nameMode === "single" && !mappingConfig.fullNameCol) {
+      alert("Por favor, selecciona la columna de 'Nombres y Apellidos'.");
+      return;
+    }
+
+    if (
+      mappingConfig.nameMode === "split" &&
+      (!mappingConfig.firstNameCol || !mappingConfig.lastNameCol)
+    ) {
+      alert("Por favor, selecciona las columnas de 'Nombres' y 'Apellidos'.");
+      return;
+    }
+
+    if (!mappingConfig.emailCol) {
+      alert("Por favor, selecciona la columna de 'Correo Electrónico'.");
+      return;
+    }
+
+    const cleaned = transformRowsToAttendees(rawExcelRows, excelHeaders, mappingConfig);
+
+    if (cleaned.length === 0) {
+      alert(
+        "No se encontraron asistentes válidos con el mapeo seleccionado. Verifica que las columnas no estén vacías."
+      );
+      return;
+    }
+
+    setAttendees(cleaned);
+    setIsMappingModalOpen(false);
+    setNotification({
+      type: "success",
+      message: `¡Mapeo dinámico aplicado! Se procesaron ${cleaned.length} asistentes con nombres normalizados en MAYÚSCULAS y correos limpios.`,
+    });
+  };
 
   const {
     getRootProps: getExcelRootProps,
@@ -317,6 +297,7 @@ export default function CertiSenderDashboard() {
         ".xlsx",
       ],
       "application/vnd.ms-excel": [".xls"],
+      "text/csv": [".csv"],
     },
     multiple: false,
   });
@@ -324,8 +305,12 @@ export default function CertiSenderDashboard() {
   const handleRemoveExcel = (e: React.MouseEvent) => {
     e.stopPropagation();
     setUploadedExcelFile(null);
+    setRawExcelRows([]);
+    setExcelHeaders([]);
+    setMappingConfig(null);
     setAttendees([]);
     setNotification(null);
+    setIsMappingModalOpen(false);
   };
 
   const insertVariable = (variable: string) => {
@@ -786,14 +771,20 @@ export default function CertiSenderDashboard() {
                   <div className="flex items-center gap-2 mt-4">
                     <button
                       type="button"
-                      className="px-2.5 py-1 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-md shadow-2xs hover:bg-slate-50"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsMappingModalOpen(true);
+                      }}
+                      className="px-2.5 py-1 text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md shadow-2xs hover:bg-indigo-100 flex items-center gap-1 cursor-pointer transition-colors"
+                      title="Ajustar correspondencia de columnas"
                     >
-                      Reemplazar
+                      <SlidersHorizontal className="h-3.5 w-3.5 text-indigo-600" />
+                      <span>Mapear Columnas</span>
                     </button>
                     <button
                       type="button"
                       onClick={handleRemoveExcel}
-                      className="p-1 text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-md transition-colors"
+                      className="p-1 text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-md transition-colors cursor-pointer"
                       title="Eliminar archivo"
                     >
                       <Trash2 className="h-4 w-4" />
@@ -806,13 +797,13 @@ export default function CertiSenderDashboard() {
                     <FileSpreadsheet className="h-6 w-6" />
                   </div>
                   <span className="text-xs font-bold text-slate-800 block">
-                    Destinatarios Excel
+                    Destinatarios Excel / CSV
                   </span>
-                  <p className="text-[11px] text-slate-500 mt-1 max-w-[180px] leading-tight">
-                    Arrastra aquí el archivo exportado de Google Forms (.xlsx).
+                  <p className="text-[11px] text-slate-500 mt-1 max-w-[190px] leading-tight">
+                    Arrastra aquí tu archivo Excel (.xlsx / .xls) o CSV con cualquier estructura.
                   </p>
                   <span className="mt-3 text-[10px] font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200/50">
-                    Formato .xlsx / .xls
+                    Formato .xlsx / .xls / .csv
                   </span>
                 </div>
               )}
@@ -830,13 +821,25 @@ export default function CertiSenderDashboard() {
               </div>
 
               <div className="flex items-center gap-2">
+                {uploadedExcelFile && (
+                  <button
+                    type="button"
+                    onClick={() => setIsMappingModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200/80 rounded-xl shadow-2xs hover:bg-indigo-100 transition-colors cursor-pointer"
+                    title="Reconfigurar la asociación de columnas del archivo actual"
+                  >
+                    <SlidersHorizontal className="h-3.5 w-3.5 text-indigo-600" />
+                    <span>Reconfigurar Columnas</span>
+                  </button>
+                )}
+
                 {attendees.length > 0 ? (
-                  <span className="text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2.5 py-1 rounded-full">
+                  <span className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
                     Total asistentes cargados: {attendees.length}
                   </span>
                 ) : (
                   <span className="text-xs font-medium text-slate-500">
-                    Esperando archivo
+                    {uploadedExcelFile ? "Pendiente de confirmación" : "Esperando archivo"}
                   </span>
                 )}
               </div>
@@ -920,11 +923,25 @@ export default function CertiSenderDashboard() {
                             <FileSpreadsheet className="h-6 w-6 stroke-1.5" />
                           </div>
                           <h4 className="font-semibold text-slate-800 text-sm mb-1">
-                            Sin datos para previsualizar
+                            {uploadedExcelFile
+                              ? "Asignación de columnas pendiente"
+                              : "Sin datos para previsualizar"}
                           </h4>
-                          <p className="text-xs text-slate-500 leading-relaxed">
-                            Debes subir la plantilla base en PDF y el archivo de Excel con los destinatarios para poblar las filas.
+                          <p className="text-xs text-slate-500 leading-relaxed mb-3">
+                            {uploadedExcelFile
+                              ? "Has cargado un archivo pero aún no has confirmado el mapeo de columnas para procesar los datos."
+                              : "Debes subir la plantilla base en PDF y el archivo de Excel/CSV con los destinatarios para poblar las filas."}
                           </p>
+                          {uploadedExcelFile && (
+                            <button
+                              type="button"
+                              onClick={() => setIsMappingModalOpen(true)}
+                              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition-all shadow-xs cursor-pointer active:scale-95"
+                            >
+                              <SlidersHorizontal className="h-3.5 w-3.5" />
+                              <span>Configurar Mapeo de Columnas</span>
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1230,6 +1247,328 @@ export default function CertiSenderDashboard() {
           </div>
         </section>
       </div>
+
+      {/* MODAL DE MAPEO DINÁMICO DE COLUMNAS */}
+      {isMappingModalOpen && mappingConfig && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl w-full max-w-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-150">
+            {/* Encabezado del Modal */}
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shadow-2xs">
+                  <SlidersHorizontal className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Mapeo Dinámico de Columnas
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    {uploadedExcelFile?.name || "Archivo de destinatarios"} •{" "}
+                    {rawExcelRows.length > 1 ? rawExcelRows.length - 1 : 0} filas detectadas
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsMappingModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Contenido del Formulario de Mapeo */}
+            <div className="p-6 overflow-y-auto flex-1 space-y-6">
+              {/* SECCIÓN 1: NOMBRE DEL ASISTENTE + TOGGLE DE NOMBRES SEPARADOS */}
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 sm:p-5 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-800 uppercase tracking-wider block">
+                      Nombre del Asistente *
+                    </label>
+                    <p className="text-[11px] text-slate-500">
+                      Define si el nombre y apellido están en una columna o separados
+                    </p>
+                  </div>
+
+                  {/* Switch Toggle: Columna Única vs Nombres Separados */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMappingConfig((prev) => {
+                        if (!prev) return prev;
+                        const newMode = prev.nameMode === "single" ? "split" : "single";
+                        return { ...prev, nameMode: newMode };
+                      });
+                    }}
+                    className={`inline-flex items-center gap-2.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer self-start sm:self-auto ${
+                      mappingConfig.nameMode === "split"
+                        ? "bg-indigo-50 border-indigo-300 text-indigo-700 shadow-2xs"
+                        : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    <span className="text-[11px]">
+                      {mappingConfig.nameMode === "split"
+                        ? "Nombres separados (2 columnas)"
+                        : "Nombre completo (1 columna)"}
+                    </span>
+                    <div
+                      className={`w-8 h-4.5 rounded-full transition-colors relative flex items-center p-0.5 ${
+                        mappingConfig.nameMode === "split"
+                          ? "bg-indigo-600"
+                          : "bg-slate-300"
+                      }`}
+                    >
+                      <div
+                        className={`w-3.5 h-3.5 rounded-full bg-white transition-transform ${
+                          mappingConfig.nameMode === "split"
+                            ? "translate-x-3.5"
+                            : "translate-x-0"
+                        }`}
+                      />
+                    </div>
+                  </button>
+                </div>
+
+                {/* Renderizado Condicional del Switch */}
+                {mappingConfig.nameMode === "single" ? (
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-bold text-slate-700 block">
+                      Columna de Nombres y Apellidos Completos *
+                    </label>
+                    <select
+                      value={mappingConfig.fullNameCol}
+                      onChange={(e) =>
+                        setMappingConfig((prev) =>
+                          prev ? { ...prev, fullNameCol: e.target.value } : prev
+                        )
+                      }
+                      className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition-all font-medium"
+                    >
+                      {excelHeaders.map((header) => (
+                        <option key={header} value={header}>
+                          {header}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-slate-400">
+                      Se convertirá automáticamente a MAYÚSCULAS absolutas y se normalizarán espacios.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-bold text-slate-700 block">
+                          Columna de Nombres *
+                        </label>
+                        <select
+                          value={mappingConfig.firstNameCol}
+                          onChange={(e) =>
+                            setMappingConfig((prev) =>
+                              prev ? { ...prev, firstNameCol: e.target.value } : prev
+                            )
+                          }
+                          className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition-all font-medium"
+                        >
+                          {excelHeaders.map((header) => (
+                            <option key={header} value={header}>
+                              {header}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-bold text-slate-700 block">
+                          Columna de Apellidos *
+                        </label>
+                        <select
+                          value={mappingConfig.lastNameCol}
+                          onChange={(e) =>
+                            setMappingConfig((prev) =>
+                              prev ? { ...prev, lastNameCol: e.target.value } : prev
+                            )
+                          }
+                          className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition-all font-medium"
+                        >
+                          {excelHeaders.map((header) => (
+                            <option key={header} value={header}>
+                              {header}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-indigo-700 font-semibold bg-indigo-50/80 px-3 py-1.5 rounded-lg border border-indigo-200/50">
+                      ℹ️ CertiSender concatenará [Nombres] + [Apellidos] con un espacio y aplicará MAYÚSCULAS uniformes.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* SECCIÓN 2: CORREO ELECTRÓNICO */}
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 sm:p-5 space-y-2">
+                <label className="text-xs font-bold text-slate-800 uppercase tracking-wider block">
+                  Correo Electrónico *
+                </label>
+                <select
+                  value={mappingConfig.emailCol}
+                  onChange={(e) =>
+                    setMappingConfig((prev) =>
+                      prev ? { ...prev, emailCol: e.target.value } : prev
+                    )
+                  }
+                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition-all font-medium"
+                >
+                  {excelHeaders.map((header) => (
+                    <option key={header} value={header}>
+                      {header}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-slate-400">
+                  Se convertirá a minúsculas absolutas y se removerán espacios en blanco al inicio, final e internos.
+                </p>
+              </div>
+
+              {/* SECCIÓN 3: DOCUMENTO DE IDENTIDAD */}
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 sm:p-5 space-y-3">
+                <div>
+                  <label className="text-xs font-bold text-slate-800 uppercase tracking-wider block">
+                    Documento de Identificación (Opcional)
+                  </label>
+                  <p className="text-[11px] text-slate-500">
+                    Utilizado para la numeración oficial en el diploma y el nombre del archivo PDF
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-semibold text-slate-700 block">
+                      Columna de N° de Documento
+                    </label>
+                    <select
+                      value={mappingConfig.docNumberCol}
+                      onChange={(e) =>
+                        setMappingConfig((prev) =>
+                          prev ? { ...prev, docNumberCol: e.target.value } : prev
+                        )
+                      }
+                      className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition-all font-medium"
+                    >
+                      <option value="">(Ninguna / Asignar N/A)</option>
+                      {excelHeaders.map((header) => (
+                        <option key={header} value={header}>
+                          {header}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-semibold text-slate-700 block">
+                      Columna de Tipo de Documento
+                    </label>
+                    <select
+                      value={mappingConfig.docTypeCol}
+                      onChange={(e) =>
+                        setMappingConfig((prev) =>
+                          prev ? { ...prev, docTypeCol: e.target.value } : prev
+                        )
+                      }
+                      className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition-all font-medium"
+                    >
+                      <option value="">(Fijo por defecto: CC)</option>
+                      {excelHeaders.map((header) => (
+                        <option key={header} value={header}>
+                          {header}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* SECCIÓN 4: PREVISUALIZACIÓN EN VIVO (LIVE PREVIEW) */}
+              <div className="rounded-2xl border border-indigo-200/90 bg-indigo-50/40 p-4 sm:p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-indigo-900 flex items-center gap-1.5">
+                    <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
+                    Previsualización en Vivo de la Normalización (Primeras 3 filas)
+                  </span>
+                  <span className="text-[10px] font-bold text-indigo-700 bg-indigo-100/90 px-2 py-0.5 rounded-md">
+                    En tiempo real
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto bg-white rounded-xl border border-indigo-100 shadow-2xs">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-[10px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-100">
+                      <tr>
+                        <th className="px-3 py-2 text-center w-8">#</th>
+                        <th className="px-3 py-2">Nombre Completo (MAYÚSCULAS)</th>
+                        <th className="px-3 py-2">Correo (minúsculas)</th>
+                        <th className="px-3 py-2">Documento</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {previewAttendees.length === 0 ? (
+                        <tr>
+                          <td
+                            colSpan={4}
+                            className="px-3 py-4 text-center text-slate-400 text-xs"
+                          >
+                            Selecciona las columnas arriba para previsualizar los datos normalizados.
+                          </td>
+                        </tr>
+                      ) : (
+                        previewAttendees.map((item, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50/60 font-mono text-[11px]">
+                            <td className="px-3 py-2 text-center font-bold text-slate-400">
+                              {idx + 1}
+                            </td>
+                            <td className="px-3 py-2 font-sans font-bold text-slate-900">
+                              {item.fullName}
+                            </td>
+                            <td className="px-3 py-2 text-indigo-600">
+                              {item.email}
+                            </td>
+                            <td className="px-3 py-2 font-sans text-slate-600">
+                              {item.docType}. {item.docNumber}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* Pie del Modal */}
+            <div className="p-4 border-t border-slate-100 bg-slate-50/70 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setIsMappingModalOpen(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:text-slate-900 bg-white border border-slate-200 hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                Cerrar sin guardar
+              </button>
+
+              <button
+                type="button"
+                onClick={handleApplyMapping}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-md shadow-indigo-600/20 transition-all cursor-pointer active:scale-[0.99]"
+              >
+                <Check className="h-4 w-4" />
+                <span>Confirmar y Procesar Destinatarios</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
